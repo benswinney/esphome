@@ -109,7 +109,10 @@ class Emerald : public esphome::ble_client::BLEClientNode, public Component {
   uint16_t time_write_size_char_handle_{0};
   uint16_t battery_char_handle_{0};
   bool handles_discovered_{false};
+  bool auth_completed_{false};
   // uint16_t firmware_char_handle_;
+
+  void setup_communication_();
 };
 
 }  // namespace emerald_ble

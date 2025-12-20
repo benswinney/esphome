@@ -196,6 +196,12 @@ void Emerald::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gatt
                this->parent_->address_str().c_str(),
                this->time_read_char_handle_, this->time_write_size_char_handle_,
                this->battery_char_handle_);
+
+      // If authentication already completed while we were discovering handles, set up communication now
+      if (this->auth_completed_) {
+        ESP_LOGI(TAG, "[%s] Auth already complete, setting up communication now", this->parent_->address_str().c_str());
+        this->setup_communication_();
+      }
       break;
     }
     case ESP_GATTC_READ_CHAR_EVT: {
@@ -277,41 +283,18 @@ void Emerald::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_par
     // This event is sent once authentication has completed
     case ESP_GAP_BLE_AUTH_CMPL_EVT: {
       if (param->ble_security.auth_cmpl.success) {
+        ESP_LOGI(TAG, "[%s] Authentication successful", this->parent_->address_str().c_str());
+        this->auth_completed_ = true;
+
         if (!this->handles_discovered_) {
-          ESP_LOGW(TAG, "[%s] Auth complete but handles not yet discovered, waiting...",
+          ESP_LOGI(TAG, "[%s] Auth complete but handles not yet discovered, will set up communication after discovery",
                    this->parent_->address_str().c_str());
           break;
         }
 
-        auto status = esp_ble_gattc_register_for_notify(this->parent_->gattc_if, this->parent_->remote_bda,
-                                                            this->time_read_char_handle_);
-        if (status) {
-          ESP_LOGW(TAG, "[%s] esp_ble_gattc_register_for_notify failed, status=%d",
-                    this->parent_->address_str().c_str(), status);
-        }
-
-        // uint8_t set_auto_upload[] = {0x00, 0x01, 0x02, 0x0b, 0x01, 0x01};
-        ESP_LOGI(TAG, "[%s] Writing auto upload code to Emerald", this->parent_->address_str().c_str());
-        auto write_status = esp_ble_gattc_write_char(this->parent()->gattc_if, this->parent()->conn_id,
-                                               this->time_write_size_char_handle_, sizeof(setAutoUploadStatusCmd),
-                                               setAutoUploadStatusCmd, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
-        if (write_status) {
-          ESP_LOGW(TAG, "Error sending write request for pairing_code, status=%d", write_status);
-        }
-
-        // read battery
-        auto read_battery_status = esp_ble_gattc_read_char(this->parent()->gattc_if, this->parent()->conn_id,
-                                                            this->battery_char_handle_, ESP_GATT_AUTH_REQ_NONE);
-        if (read_battery_status) {
-          ESP_LOGW(TAG, "Error sending read request for battery, status=%d", read_battery_status);
-        }
-        // Enable notifications for battery
-        auto notify_battery_status = esp_ble_gattc_register_for_notify(
-            this->parent_->gattc_if, this->parent_->remote_bda, this->battery_char_handle_);
-        if (notify_battery_status) {
-          ESP_LOGW(TAG, "[%s] esp_ble_gattc_register_for_notify failed, status=%d",
-                    this->parent_->address_str().c_str(), notify_battery_status);
-        }
+        this->setup_communication_();
+      } else {
+        ESP_LOGW(TAG, "[%s] Authentication failed", this->parent_->address_str().c_str());
       }
       break;
     }
@@ -322,6 +305,42 @@ void Emerald::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_par
     }
     default:
       break;
+  }
+}
+
+void Emerald::setup_communication_() {
+  ESP_LOGI(TAG, "[%s] Setting up communication with Emerald device", this->parent_->address_str().c_str());
+
+  // Register for notifications on the time read characteristic
+  auto status = esp_ble_gattc_register_for_notify(this->parent_->gattc_if, this->parent_->remote_bda,
+                                                      this->time_read_char_handle_);
+  if (status) {
+    ESP_LOGW(TAG, "[%s] esp_ble_gattc_register_for_notify failed, status=%d",
+              this->parent_->address_str().c_str(), status);
+  }
+
+  // Send auto upload command
+  ESP_LOGI(TAG, "[%s] Writing auto upload code to Emerald", this->parent_->address_str().c_str());
+  auto write_status = esp_ble_gattc_write_char(this->parent()->gattc_if, this->parent()->conn_id,
+                                         this->time_write_size_char_handle_, sizeof(setAutoUploadStatusCmd),
+                                         setAutoUploadStatusCmd, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+  if (write_status) {
+    ESP_LOGW(TAG, "Error sending write request for auto upload, status=%d", write_status);
+  }
+
+  // Read battery level
+  auto read_battery_status = esp_ble_gattc_read_char(this->parent()->gattc_if, this->parent()->conn_id,
+                                                      this->battery_char_handle_, ESP_GATT_AUTH_REQ_NONE);
+  if (read_battery_status) {
+    ESP_LOGW(TAG, "Error sending read request for battery, status=%d", read_battery_status);
+  }
+
+  // Enable notifications for battery
+  auto notify_battery_status = esp_ble_gattc_register_for_notify(
+      this->parent_->gattc_if, this->parent_->remote_bda, this->battery_char_handle_);
+  if (notify_battery_status) {
+    ESP_LOGW(TAG, "[%s] esp_ble_gattc_register_for_notify for battery failed, status=%d",
+              this->parent_->address_str().c_str(), notify_battery_status);
   }
 }
 
