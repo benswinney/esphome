@@ -37,7 +37,7 @@ void Emerald::decode_(const uint8_t *data, uint16_t length) {
 
 void Emerald::parse_battery_(const uint8_t *data, uint16_t length) {
   ESP_LOGD(TAG, "Battery: DEC(%d): 0x%s", length, this->pkt_to_hex_(data, length).c_str());
-  if (length == 1) {
+  if (length == 1 && this->battery_ != nullptr) {
     this->battery_->publish_state(data[0]);
   }
 }
@@ -159,6 +159,43 @@ void Emerald::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gatt
       break;
     }
     case ESP_GATTC_SEARCH_CMPL_EVT: {
+      ESP_LOGD(TAG, "[%s] ESP_GATTC_SEARCH_CMPL_EVT - discovering handles", this->parent_->address_str().c_str());
+
+      // Discover time_read characteristic
+      auto *chr = this->parent()->get_characteristic(EMERALD_SERVICE_TIME_UUID, EMERALD_CHARACTERISTIC_TIME_READ_UUID);
+      if (chr == nullptr) {
+        ESP_LOGW(TAG, "No time read characteristic found at service %s char %s",
+                 EMERALD_SERVICE_TIME_UUID.to_string().c_str(),
+                 EMERALD_CHARACTERISTIC_TIME_READ_UUID.to_string().c_str());
+        break;
+      }
+      this->time_read_char_handle_ = chr->handle;
+
+      // Discover time_write characteristic
+      chr = this->parent()->get_characteristic(EMERALD_SERVICE_TIME_UUID, EMERALD_CHARACTERISTIC_TIME_WRITE_UUID);
+      if (chr == nullptr) {
+        ESP_LOGW(TAG, "No time write characteristic found at service %s char %s",
+                 EMERALD_SERVICE_TIME_UUID.to_string().c_str(),
+                 EMERALD_CHARACTERISTIC_TIME_WRITE_UUID.to_string().c_str());
+        break;
+      }
+      this->time_write_size_char_handle_ = chr->handle;
+
+      // Discover battery characteristic
+      chr = this->parent()->get_characteristic(EMERALD_BATTERY_SERVICE_UUID, EMERALD_BATTERY_CHARACTERISTIC_UUID);
+      if (chr == nullptr) {
+        ESP_LOGW(TAG, "No battery characteristic found at service %s char %s",
+                 EMERALD_BATTERY_SERVICE_UUID.to_string().c_str(),
+                 EMERALD_BATTERY_CHARACTERISTIC_UUID.to_string().c_str());
+        break;
+      }
+      this->battery_char_handle_ = chr->handle;
+
+      this->handles_discovered_ = true;
+      ESP_LOGI(TAG, "[%s] Discovered handles - time_read:0x%04x time_write:0x%04x battery:0x%04x",
+               this->parent_->address_str().c_str(),
+               this->time_read_char_handle_, this->time_write_size_char_handle_,
+               this->battery_char_handle_);
       break;
     }
     case ESP_GATTC_READ_CHAR_EVT: {
@@ -172,6 +209,13 @@ void Emerald::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gatt
       if (param->read.handle == this->time_read_char_handle_) {
         ESP_LOGD(TAG, "Recieved time read event");
         this->decode_emerald_packet_(param->read.value, param->read.value_len);
+        break;
+      }
+
+      // battery_char_handle_
+      if (param->read.handle == this->battery_char_handle_) {
+        ESP_LOGD(TAG, "Recieved battery read event");
+        this->parse_battery_(param->read.value, param->read.value_len);
         break;
       }
 
@@ -233,6 +277,12 @@ void Emerald::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_par
     // This event is sent once authentication has completed
     case ESP_GAP_BLE_AUTH_CMPL_EVT: {
       if (param->ble_security.auth_cmpl.success) {
+        if (!this->handles_discovered_) {
+          ESP_LOGW(TAG, "[%s] Auth complete but handles not yet discovered, waiting...",
+                   this->parent_->address_str().c_str());
+          break;
+        }
+
         auto status = esp_ble_gattc_register_for_notify(this->parent_->gattc_if, this->parent_->remote_bda,
                                                             this->time_read_char_handle_);
         if (status) {
