@@ -197,7 +197,7 @@ void Emerald::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gatt
         // Don't break - battery is optional
       } else {
         this->battery_char_handle_ = chr->handle;
-        ESP_LOGI(TAG, "[%s] Found battery characteristic at handle 0x%04x", this->parent_->address_str().c_str(), this->battery_char_handle_);
+        ESP_LOGD(TAG, "[%s] Found battery characteristic at handle 0x%04x", this->parent_->address_str().c_str(), this->battery_char_handle_);
       }
 
       this->handles_discovered_ = true;
@@ -208,7 +208,7 @@ void Emerald::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gatt
 
       // If authentication already completed while we were discovering handles, set up communication now
       if (this->auth_completed_) {
-        ESP_LOGI(TAG, "[%s] Auth already complete, setting up communication now", this->parent_->address_str().c_str());
+        ESP_LOGD(TAG, "[%s] Auth already complete, setting up communication now", this->parent_->address_str().c_str());
         this->setup_communication_();
       }
       break;
@@ -341,7 +341,7 @@ void Emerald::setup_communication_() {
   if (this->battery_char_handle_ == 0) {
     ESP_LOGW(TAG, "[%s] Battery characteristic handle is 0, skipping battery read", this->parent_->address_str().c_str());
   } else {
-    ESP_LOGI(TAG, "[%s] Reading battery level from handle 0x%04x", this->parent_->address_str().c_str(), this->battery_char_handle_);
+    ESP_LOGD(TAG, "[%s] Reading battery level from handle 0x%04x", this->parent_->address_str().c_str(), this->battery_char_handle_);
     auto read_battery_status = esp_ble_gattc_read_char(this->parent()->gattc_if, this->parent()->conn_id,
                                                         this->battery_char_handle_, ESP_GATT_AUTH_REQ_NONE);
     if (read_battery_status) {
