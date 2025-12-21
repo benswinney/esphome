@@ -37,9 +37,16 @@ void Emerald::decode_(const uint8_t *data, uint16_t length) {
 
 void Emerald::parse_battery_(const uint8_t *data, uint16_t length) {
   ESP_LOGD(TAG, "Battery: DEC(%d): 0x%s", length, this->pkt_to_hex_(data, length).c_str());
-  if (length == 1 && this->battery_ != nullptr) {
-    this->battery_->publish_state(data[0]);
+  if (this->battery_ == nullptr) {
+    ESP_LOGD(TAG, "Battery sensor not configured, skipping");
+    return;
   }
+  if (length != 1) {
+    ESP_LOGW(TAG, "Unexpected battery data length: %d (expected 1)", length);
+    return;
+  }
+  ESP_LOGI(TAG, "Battery level: %d%%", data[0]);
+  this->battery_->publish_state(data[0]);
 }
 
 uint32_t Emerald::parse_command_header_(const uint8_t *data) {
@@ -181,15 +188,17 @@ void Emerald::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gatt
       }
       this->time_write_size_char_handle_ = chr->handle;
 
-      // Discover battery characteristic
+      // Discover battery characteristic (optional - device may not have standard battery service)
       chr = this->parent()->get_characteristic(EMERALD_BATTERY_SERVICE_UUID, EMERALD_BATTERY_CHARACTERISTIC_UUID);
       if (chr == nullptr) {
-        ESP_LOGW(TAG, "No battery characteristic found at service %s char %s",
+        ESP_LOGW(TAG, "No battery characteristic found at service %s char %s - battery level will not be available",
                  EMERALD_BATTERY_SERVICE_UUID.to_string().c_str(),
                  EMERALD_BATTERY_CHARACTERISTIC_UUID.to_string().c_str());
-        break;
+        // Don't break - battery is optional
+      } else {
+        this->battery_char_handle_ = chr->handle;
+        ESP_LOGI(TAG, "[%s] Found battery characteristic at handle 0x%04x", this->parent_->address_str().c_str(), this->battery_char_handle_);
       }
-      this->battery_char_handle_ = chr->handle;
 
       this->handles_discovered_ = true;
       ESP_LOGI(TAG, "[%s] Discovered handles - time_read:0x%04x time_write:0x%04x battery:0x%04x",
@@ -329,18 +338,23 @@ void Emerald::setup_communication_() {
   }
 
   // Read battery level
-  auto read_battery_status = esp_ble_gattc_read_char(this->parent()->gattc_if, this->parent()->conn_id,
-                                                      this->battery_char_handle_, ESP_GATT_AUTH_REQ_NONE);
-  if (read_battery_status) {
-    ESP_LOGW(TAG, "Error sending read request for battery, status=%d", read_battery_status);
-  }
+  if (this->battery_char_handle_ == 0) {
+    ESP_LOGW(TAG, "[%s] Battery characteristic handle is 0, skipping battery read", this->parent_->address_str().c_str());
+  } else {
+    ESP_LOGI(TAG, "[%s] Reading battery level from handle 0x%04x", this->parent_->address_str().c_str(), this->battery_char_handle_);
+    auto read_battery_status = esp_ble_gattc_read_char(this->parent()->gattc_if, this->parent()->conn_id,
+                                                        this->battery_char_handle_, ESP_GATT_AUTH_REQ_NONE);
+    if (read_battery_status) {
+      ESP_LOGW(TAG, "Error sending read request for battery, status=%d", read_battery_status);
+    }
 
-  // Enable notifications for battery
-  auto notify_battery_status = esp_ble_gattc_register_for_notify(
-      this->parent_->gattc_if, this->parent_->remote_bda, this->battery_char_handle_);
-  if (notify_battery_status) {
-    ESP_LOGW(TAG, "[%s] esp_ble_gattc_register_for_notify for battery failed, status=%d",
-              this->parent_->address_str().c_str(), notify_battery_status);
+    // Enable notifications for battery
+    auto notify_battery_status = esp_ble_gattc_register_for_notify(
+        this->parent_->gattc_if, this->parent_->remote_bda, this->battery_char_handle_);
+    if (notify_battery_status) {
+      ESP_LOGW(TAG, "[%s] esp_ble_gattc_register_for_notify for battery failed, status=%d",
+                this->parent_->address_str().c_str(), notify_battery_status);
+    }
   }
 }
 
