@@ -46,12 +46,13 @@ static const espbt::ESPBTUUID EMERALD_BATTERY_CHARACTERISTIC_UUID = espbt::ESPBT
 //enabled
 static uint8_t setAutoUploadStatusCmd[] = {0x00,0x01,0x02,0x0b,0x01,0x01};
 
-static const uint32_t RETURN30S_POWER_CONSUMPTION_CMD =      0x0001020a06;
-static const uint32_t RETURN_UPDATED_POWER_CMD =             0x0001020204;
-static const uint32_t RETURN_EVERY30S_POWER_CONSUMPTION_CMD = 0x000102050e;
-static const uint32_t RETURN_IMPULSE_CMD =                  0x0001010602;
-static const uint32_t RETURN_PAIRING_CODE_CMD =              0x0001030206;
-static const uint32_t RETURN_DEVICE_TIME_CMD =               0x0001010304;
+// 5-byte command headers, big-endian packed into a uint64_t (top 24 bits unused).
+static const uint64_t RETURN30S_POWER_CONSUMPTION_CMD =      0x0001020a06ULL;
+static const uint64_t RETURN_UPDATED_POWER_CMD =             0x0001020204ULL;
+static const uint64_t RETURN_EVERY30S_POWER_CONSUMPTION_CMD = 0x000102050eULL;
+static const uint64_t RETURN_IMPULSE_CMD =                   0x0001010602ULL;
+static const uint64_t RETURN_PAIRING_CODE_CMD =              0x0001030206ULL;
+static const uint64_t RETURN_DEVICE_TIME_CMD =               0x0001010304ULL;
 
 static const uint8_t standard_update_interval = 30;    // seconds
 static const float kw_to_w_conversion = 1000.0;    // conversion ratio
@@ -86,7 +87,7 @@ class Emerald : public esphome::ble_client::BLEClientNode, public Component {
   void decode_(const uint8_t *data, uint16_t length);
   void parse_battery_(const uint8_t *data, uint16_t length);
   void parse_measurement_(const uint8_t *data, uint16_t length);
-  uint32_t parse_command_header_(const uint8_t *data);
+  uint64_t parse_command_header_(const uint8_t *data);
   uint32_t decode_emerald_date_(const uint8_t *data);
   void decode_emerald_packet_(const uint8_t *data, uint16_t length);
 

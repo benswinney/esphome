@@ -1,6 +1,7 @@
 #include "emerald_ble.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/time.h"
 
 #ifdef USE_ESP32
@@ -16,19 +17,16 @@ void Emerald::dump_config() {
   LOG_SENSOR(" ", "Power", this->power_sensor_);
   LOG_SENSOR(" ", "Daily Energy", this->daily_energy_sensor_);
   LOG_SENSOR(" ", "Total Energy", this->energy_sensor_);
-  ESP_LOGD(TAG, "pulses_per_kwh_: %f", this->pulses_per_kwh_);
-  ESP_LOGD(TAG, "pulse_multiplier_: %f", this->pulse_multiplier_);
+  ESP_LOGCONFIG(TAG, "  pulses_per_kwh: %f", this->pulses_per_kwh_);
+  ESP_LOGCONFIG(TAG, "  pulse_multiplier: %f", this->pulse_multiplier_);
 }
 
 // void Emerald::setup() { this->authenticated_ = false; }
 
 std::string Emerald::pkt_to_hex_(const uint8_t *data, uint16_t len) {
-  char buf[64];
-  memset(buf, 0, 64);
-  for (int i = 0; i < len; i++)
-    sprintf(&buf[i * 2], "%02x", data[i]);
-  std::string ret = buf;
-  return ret;
+  // Delegate to ESPHome's helper: handles any length safely (no fixed buffer)
+  // and produces consistent formatting with the rest of the codebase.
+  return format_hex_pretty(data, len);
 }
 
 void Emerald::decode_(const uint8_t *data, uint16_t length) {
@@ -49,10 +47,14 @@ void Emerald::parse_battery_(const uint8_t *data, uint16_t length) {
   this->battery_->publish_state(data[0]);
 }
 
-uint32_t Emerald::parse_command_header_(const uint8_t *data) {
-    uint32_t command_header = 0;
-    for (int i = 0;  i < 5; i++) {
-        command_header += (data[i] << (8*(4-i)));
+uint64_t Emerald::parse_command_header_(const uint8_t *data) {
+    // The command header is 5 bytes, big-endian. Pack into a uint64_t to avoid
+    // the previous bug where data[i] (promoted to int) was shifted by 32 — UB
+    // on a 32-bit int — and the result was stored in a uint32_t which would
+    // truncate the top byte of any future >4-byte header.
+    uint64_t command_header = 0;
+    for (int i = 0; i < 5; i++) {
+        command_header |= static_cast<uint64_t>(data[i]) << (8 * (4 - i));
     }
     return command_header;
 }
@@ -75,11 +77,13 @@ uint32_t Emerald::decode_emerald_date_(const uint8_t *data) {
 void Emerald::decode_emerald_packet_(const uint8_t *data, uint16_t length) {
   ESP_LOGD(TAG, "DEC(%d): 0x%s", length, this->pkt_to_hex_(data, length).c_str());
   if (length >= 5) {
-    uint32_t command_header = this->parse_command_header_(data);
+    uint64_t command_header = this->parse_command_header_(data);
     switch(command_header) {
       case RETURN30S_POWER_CONSUMPTION_CMD: {
         if (length != 11) {
-          //return
+          ESP_LOGW(TAG, "RETURN30S_POWER_CONSUMPTION_CMD: unexpected length %d (expected 11), discarding packet",
+                   length);
+          return;
         }
 
         uint16_t pulses_within_interval = data[9] << 8;
@@ -107,33 +111,36 @@ void Emerald::decode_emerald_packet_(const uint8_t *data, uint16_t length) {
           this->daily_energy_sensor_->publish_state(energy);
 
 
-          // if esphome device has a valid time component set up, use that (preferred)
-          // else, use the emerald measurement timestamps
+          // Prefer an ESPHome time component if one is wired up AND currently has a valid time.
+          // Otherwise fall back to the day-of-month encoded in the Emerald packet itself.
+          bool used_esphome_time = false;
 #ifdef USE_TIME
-          auto *time_ = *this->time_;
-          ESPTime date_of_measurement = time_->now();
-          // ESPTime date_of_measurement = this->time_->now();
-          if (date_of_measurement.is_valid()) {
-            if (this->day_of_last_measurement_ == 0) { this->day_of_last_measurement_ = date_of_measurement.day_of_year; }
-            else if (this->day_of_last_measurement_ != date_of_measurement.day_of_year) {
-              this->daily_pulses_ = 0;
-              this->day_of_last_measurement_ = date_of_measurement.day_of_year;
+          if (this->time_.has_value()) {
+            auto *time_component = *this->time_;
+            ESPTime date_of_measurement = time_component->now();
+            if (date_of_measurement.is_valid()) {
+              used_esphome_time = true;
+              if (this->day_of_last_measurement_ == 0) {
+                this->day_of_last_measurement_ = date_of_measurement.day_of_year;
+              } else if (this->day_of_last_measurement_ != date_of_measurement.day_of_year) {
+                this->daily_pulses_ = 0;
+                this->day_of_last_measurement_ = date_of_measurement.day_of_year;
+              }
             }
-          } else {
-            // if !date_of_measurement.is_valid(), user may have a bare "time:" in their yaml without a specific platform selected, so fallback to date of emerald measurement
-#else
-            // avoid using ESPTime here so we don't need a time component in the config
+          }
+#endif
+          if (!used_esphome_time) {
+            // Fallback: extract day-of-month from the Emerald packet timestamp.
+            // Bit layout (32 bits): year[31:26] month[25:22] day[21:17] hour[16:12] min[11:6] sec[5:0]
             uint32_t command_date_bin = this->decode_emerald_date_(data);
             uint8_t day_of_measurement = ((command_date_bin >> 17) & 0b11111); // 1-31
-            if (this->day_of_last_measurement_ == 0) { this->day_of_last_measurement_ = day_of_measurement; }
-            else if (this->day_of_last_measurement_ != day_of_measurement) {
+            if (this->day_of_last_measurement_ == 0) {
+              this->day_of_last_measurement_ = day_of_measurement;
+            } else if (this->day_of_last_measurement_ != day_of_measurement) {
               this->daily_pulses_ = 0;
               this->day_of_last_measurement_ = day_of_measurement;
             }
-#endif
-#ifdef USE_TIME
           }
-#endif
         }
 
         break;
@@ -155,7 +162,7 @@ void Emerald::decode_emerald_packet_(const uint8_t *data, uint16_t length) {
       }
     }
   } else {
-    // is this possible? failure?
+    ESP_LOGW(TAG, "Packet too short to contain a command header: %d bytes (need >= 5)", length);
   }
 }
 
