@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/core/component.h"
+#include "esphome/core/preferences.h"
 #include "esphome/components/ble_client/ble_client.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
@@ -46,10 +47,17 @@ static const float kw_to_w_conversion = 1000.0;    // conversion ratio
 static const float hr_to_s_conversion = 3600.0;
 
 
+/// Pulse counters and day marker persisted across reboots so HA's
+/// total_increasing long-term statistics don't reset on every restart.
+struct EmeraldPersistedState {
+  uint64_t total_pulses;
+  uint64_t daily_pulses;
+  uint8_t day_of_last_measurement;
+} __attribute__((packed));
+
 class Emerald : public esphome::ble_client::BLEClientNode, public Component {
-  // class Emerald : public esphome::ble_client::BLEClientNode, public PollingComponent {
  public:
-  // void setup() override;
+  void setup() override;
   void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                            esp_ble_gattc_cb_param_t *param) override;
   void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) override;
@@ -109,6 +117,13 @@ class Emerald : public esphome::ble_client::BLEClientNode, public Component {
   void setup_communication_();
   void reset_connection_state_();
   void force_reconnect_();
+  /// Save persisted state to flash. Throttled to MIN_SAVE_INTERVAL_MS unless
+  /// force=true (e.g. day rollover, manual daily reset).
+  void save_state_(bool force);
+
+  ESPPreferenceObject pref_state_;
+  uint32_t last_save_ms_{0};
+  static const uint32_t MIN_SAVE_INTERVAL_MS = 60000;  // 1 minute — bounds NVS wear
 };
 
 }  // namespace emerald_ble

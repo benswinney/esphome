@@ -11,6 +11,51 @@ namespace emerald_ble {
 
 static const char *const TAG = "emerald_ble";
 
+void Emerald::setup() {
+  // Persisted state hash mixes a constant tag with the meter's MAC address so:
+  //  - the same meter reattaches to the same NVS slot across recompiles (unlike
+  //    fnv1_hash(App.get_compilation_time()) which invalidates each build);
+  //  - multiple meters on one ESP can coexist without colliding.
+  uint32_t hash = fnv1_hash(std::string("emerald_ble_state_") + this->parent_->address_str());
+  this->pref_state_ = global_preferences->make_preference<EmeraldPersistedState>(hash, true);
+
+  EmeraldPersistedState saved{};
+  if (this->pref_state_.load(&saved)) {
+    this->total_pulses_ = saved.total_pulses;
+    this->daily_pulses_ = saved.daily_pulses;
+    this->day_of_last_measurement_ = saved.day_of_last_measurement;
+    ESP_LOGI(TAG, "Restored state: total_pulses=%llu daily_pulses=%llu day_of_last=%u",
+             (unsigned long long) this->total_pulses_,
+             (unsigned long long) this->daily_pulses_,
+             this->day_of_last_measurement_);
+
+    // Republish restored totals immediately so HA picks them up before the
+    // first BLE packet arrives (which can take a minute or more).
+    if (this->energy_sensor_ != nullptr) {
+      this->energy_sensor_->publish_state(this->total_pulses_ / this->pulses_per_kwh_);
+    }
+    if (this->daily_energy_sensor_ != nullptr) {
+      this->daily_energy_sensor_->publish_state(this->daily_pulses_ / this->pulses_per_kwh_);
+    }
+  } else {
+    ESP_LOGI(TAG, "No persisted state found (first boot after flash, or NVS cleared)");
+  }
+}
+
+void Emerald::save_state_(bool force) {
+  const uint32_t now = millis();
+  if (!force && (now - this->last_save_ms_) < MIN_SAVE_INTERVAL_MS) {
+    return;
+  }
+  this->last_save_ms_ = now;
+  EmeraldPersistedState state{
+      .total_pulses = this->total_pulses_,
+      .daily_pulses = this->daily_pulses_,
+      .day_of_last_measurement = this->day_of_last_measurement_,
+  };
+  this->pref_state_.save(&state);
+}
+
 void Emerald::dump_config() {
   ESP_LOGCONFIG(TAG, "EMERALD");
   LOG_SENSOR(" ", "Battery", this->battery_);
@@ -43,6 +88,9 @@ void Emerald::reset_daily_energy() {
   if (this->daily_energy_sensor_ != nullptr) {
     this->daily_energy_sensor_->publish_state(0.0f);
   }
+  // Force the zero to disk immediately so a power-cycle right after a manual
+  // reset doesn't restore the previous daily total.
+  this->save_state_(true);
 }
 
 void Emerald::force_reconnect_() {
@@ -137,6 +185,11 @@ void Emerald::decode_emerald_packet_(const uint8_t *data, uint16_t length) {
           this->energy_sensor_->publish_state(energy);
         }
 
+        // Hoisted out of the daily_energy_sensor_ branch so the post-publish
+        // save_state_() call below can see it regardless of which sensors are
+        // configured.
+        bool day_rolled_over = false;
+
         if (this->daily_energy_sensor_ != nullptr) {
           // even if new day, publish last measurement window before resetting
           this->daily_pulses_ += pulses_within_interval;
@@ -158,6 +211,7 @@ void Emerald::decode_emerald_packet_(const uint8_t *data, uint16_t length) {
               } else if (this->day_of_last_measurement_ != date_of_measurement.day_of_year) {
                 this->daily_pulses_ = 0;
                 this->day_of_last_measurement_ = date_of_measurement.day_of_year;
+                day_rolled_over = true;
               }
             }
           }
@@ -172,9 +226,14 @@ void Emerald::decode_emerald_packet_(const uint8_t *data, uint16_t length) {
             } else if (this->day_of_last_measurement_ != day_of_measurement) {
               this->daily_pulses_ = 0;
               this->day_of_last_measurement_ = day_of_measurement;
+              day_rolled_over = true;
             }
           }
         }
+        // Persist accumulators after every 30-second measurement. Throttled to
+        // MIN_SAVE_INTERVAL_MS (1 min) for NVS wear, but force-save on day
+        // rollover so the freshly-zeroed daily counter is immediately durable.
+        this->save_state_(day_rolled_over);
 
         break;
       }
