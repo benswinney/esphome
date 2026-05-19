@@ -2,6 +2,7 @@
 
 #include "esphome/core/component.h"
 #include "esphome/components/ble_client/ble_client.h"
+#include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/core/defines.h"
@@ -58,6 +59,10 @@ class Emerald : public esphome::ble_client::BLEClientNode, public Component {
   void set_power_sensor(sensor::Sensor *power_sensor) { power_sensor_ = power_sensor; }
   void set_energy_sensor(sensor::Sensor *energy_sensor) { energy_sensor_ = energy_sensor; }
   void set_daily_energy_sensor(sensor::Sensor *daily_energy_sensor) { daily_energy_sensor_ = daily_energy_sensor; }
+  void set_connected_binary_sensor(binary_sensor::BinarySensor *connected) { connected_sensor_ = connected; }
+  /// Zero the daily energy accumulator and republish 0. Intended to be called
+  /// from a YAML lambda (e.g. a template button) for manual resets.
+  void reset_daily_energy();
 #ifdef USE_TIME
   void set_time(time::RealTimeClock *time) { this->time_ = time; }
 #endif
@@ -81,6 +86,9 @@ class Emerald : public esphome::ble_client::BLEClientNode, public Component {
   sensor::Sensor *power_sensor_{nullptr};
   sensor::Sensor *energy_sensor_{nullptr};
   sensor::Sensor *daily_energy_sensor_{nullptr};
+  binary_sensor::BinarySensor *connected_sensor_{nullptr};
+
+  void publish_connected_(bool connected);
 #ifdef USE_TIME
   optional<time::RealTimeClock *> time_{};
 #endif

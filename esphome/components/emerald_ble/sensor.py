@@ -18,14 +18,9 @@ from esphome.const import (
     UNIT_PERCENT,
     CONF_TIME_ID,
 )
+from . import Emerald, CODEOWNERS, DEPENDENCIES  # noqa: F401  (re-exported for ESPHome)
 
 _LOGGER = logging.getLogger(__name__)
-
-CODEOWNERS = ["@WeekendWarrior1"]
-DEPENDENCIES = ["ble_client"]
-
-emerald_ble_ns = cg.esphome_ns.namespace("emerald_ble")
-Emerald = emerald_ble_ns.class_("Emerald", ble_client.BLEClientNode, cg.Component)
 
 CONF_PAIRING_CODE = "pairing_code"
 CONF_NOTIFICATION_INTERVAL = "notification_interval"

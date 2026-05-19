@@ -17,6 +17,7 @@ void Emerald::dump_config() {
   LOG_SENSOR(" ", "Power", this->power_sensor_);
   LOG_SENSOR(" ", "Daily Energy", this->daily_energy_sensor_);
   LOG_SENSOR(" ", "Total Energy", this->energy_sensor_);
+  LOG_BINARY_SENSOR(" ", "Connected", this->connected_sensor_);
   ESP_LOGCONFIG(TAG, "  pulses_per_kwh: %f", this->pulses_per_kwh_);
   ESP_LOGCONFIG(TAG, "  pulse_multiplier: %f", this->pulse_multiplier_);
 }
@@ -27,6 +28,21 @@ void Emerald::reset_connection_state_() {
   this->time_read_char_handle_ = 0;
   this->time_write_size_char_handle_ = 0;
   this->battery_char_handle_ = 0;
+  this->publish_connected_(false);
+}
+
+void Emerald::publish_connected_(bool connected) {
+  if (this->connected_sensor_ != nullptr) {
+    this->connected_sensor_->publish_state(connected);
+  }
+}
+
+void Emerald::reset_daily_energy() {
+  ESP_LOGI(TAG, "reset_daily_energy() called — zeroing daily accumulator");
+  this->daily_pulses_ = 0;
+  if (this->daily_energy_sensor_ != nullptr) {
+    this->daily_energy_sensor_->publish_state(0.0f);
+  }
 }
 
 void Emerald::force_reconnect_() {
@@ -377,6 +393,9 @@ void Emerald::setup_communication_() {
                 this->parent_->address_str().c_str(), notify_battery_status);
     }
   }
+
+  // Communication fully established — mark connected.
+  this->publish_connected_(true);
 }
 
 }  // namespace emerald_ble
