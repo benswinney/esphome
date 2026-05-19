@@ -21,7 +21,24 @@ void Emerald::dump_config() {
   ESP_LOGCONFIG(TAG, "  pulse_multiplier: %f", this->pulse_multiplier_);
 }
 
-// void Emerald::setup() { this->authenticated_ = false; }
+void Emerald::reset_connection_state_() {
+  this->handles_discovered_ = false;
+  this->auth_completed_ = false;
+  this->time_read_char_handle_ = 0;
+  this->time_write_size_char_handle_ = 0;
+  this->battery_char_handle_ = 0;
+}
+
+void Emerald::force_reconnect_() {
+  // Close the GATT connection; ble_client's own DISCONNECT_EVT handler will set
+  // state to IDLE and the esp32_ble_tracker scan loop will reconnect.
+  ESP_LOGI(TAG, "[%s] Forcing GATT disconnect to trigger reconnect", this->parent_->address_str().c_str());
+  auto ret = esp_ble_gattc_close(this->parent()->gattc_if, this->parent()->conn_id);
+  if (ret) {
+    ESP_LOGW(TAG, "[%s] esp_ble_gattc_close failed during forced reconnect, status=%d",
+             this->parent_->address_str().c_str(), ret);
+  }
+}
 
 std::string Emerald::pkt_to_hex_(const uint8_t *data, uint16_t len) {
   // Delegate to ESPHome's helper: handles any length safely (no fixed buffer)
@@ -87,7 +104,7 @@ void Emerald::decode_emerald_packet_(const uint8_t *data, uint16_t length) {
         }
 
         uint16_t pulses_within_interval = data[9] << 8;
-        pulses_within_interval += + data[10];
+        pulses_within_interval += data[10];
 
         float avg_watts_within_interval = pulses_within_interval * this->pulse_multiplier_;
 
@@ -170,6 +187,9 @@ void Emerald::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gatt
                                    esp_ble_gattc_cb_param_t *param) {
   switch (event) {
     case ESP_GATTC_DISCONNECT_EVT: {
+      ESP_LOGI(TAG, "[%s] Disconnected — resetting connection state for next attempt",
+               this->parent_->address_str().c_str());
+      this->reset_connection_state_();
       break;
     }
     case ESP_GATTC_SEARCH_CMPL_EVT: {
@@ -229,24 +249,17 @@ void Emerald::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gatt
 
       // time_read_char_handle_
       if (param->read.handle == this->time_read_char_handle_) {
-        ESP_LOGD(TAG, "Recieved time read event");
+        ESP_LOGD(TAG, "Received time read event");
         this->decode_emerald_packet_(param->read.value, param->read.value_len);
         break;
       }
 
       // battery_char_handle_
       if (param->read.handle == this->battery_char_handle_) {
-        ESP_LOGD(TAG, "Recieved battery read event");
+        ESP_LOGD(TAG, "Received battery read event");
         this->parse_battery_(param->read.value, param->read.value_len);
         break;
       }
-
-      // // firmware
-      // if (param->read.handle == this->firmware_char_handle_) {
-      //   ESP_LOGD(TAG, "Recieved firmware read event");
-      //   this->decode_(param->read.value, param->read.value_len);
-      //   break;
-      // }
 
       break;
     }
@@ -264,30 +277,22 @@ void Emerald::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gatt
     }  // ESP_GATTC_WRITE_CHAR_EVT
 
     case ESP_GATTC_NOTIFY_EVT: {
-      ESP_LOGD(TAG, "[%s] Received Notification", this->parent_->address_str().c_str());
-
+      ESP_LOGD(TAG, "[%s] Received notification", this->parent_->address_str().c_str());
 
       // time_read_char_handle_
       if (param->notify.handle == this->time_read_char_handle_) {
-        ESP_LOGD(TAG, "Recieved time read notification");
+        ESP_LOGD(TAG, "Received time read notification");
         this->decode_emerald_packet_(param->notify.value, param->notify.value_len);
         break;
       }
 
       // battery
       if (param->notify.handle == this->battery_char_handle_) {
-        ESP_LOGD(TAG, "Recieved battery notify event");
+        ESP_LOGD(TAG, "Received battery notify event");
         this->parse_battery_(param->notify.value, param->notify.value_len);
         break;
       }
-
-      // // battery
-      // if (param->notify.handle == this->measurement_char_handle_) {
-      //   ESP_LOGD(TAG, "Recieved measurement notify event");
-      //   this->parse_measurement_(param->notify.value, param->notify.value_len);
-      //   break;
-      // }
-      break;  // registerForNotify
+      break;
     }
     default:
       break;
@@ -310,7 +315,14 @@ void Emerald::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_par
 
         this->setup_communication_();
       } else {
-        ESP_LOGW(TAG, "[%s] Authentication failed", this->parent_->address_str().c_str());
+        ESP_LOGW(TAG, "[%s] Authentication failed (reason=0x%02x) — forcing reconnect",
+                 this->parent_->address_str().c_str(),
+                 param->ble_security.auth_cmpl.fail_reason);
+        // Without this the meter stays in a half-connected dead state until reboot.
+        // Reset our flags and tear down the GATT connection so ble_client/tracker
+        // re-establish it on the next scan cycle.
+        this->reset_connection_state_();
+        this->force_reconnect_();
       }
       break;
     }
@@ -335,11 +347,13 @@ void Emerald::setup_communication_() {
               this->parent_->address_str().c_str(), status);
   }
 
-  // Send auto upload command
+  // Send auto upload command. The IDF write API takes a non-const uint8_t*, so
+  // cast away const on the flash-resident buffer; the device only reads from it.
   ESP_LOGI(TAG, "[%s] Writing auto upload code to Emerald", this->parent_->address_str().c_str());
   auto write_status = esp_ble_gattc_write_char(this->parent()->gattc_if, this->parent()->conn_id,
-                                         this->time_write_size_char_handle_, sizeof(setAutoUploadStatusCmd),
-                                         setAutoUploadStatusCmd, ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
+                                         this->time_write_size_char_handle_, sizeof(SET_AUTO_UPLOAD_STATUS_CMD),
+                                         const_cast<uint8_t *>(SET_AUTO_UPLOAD_STATUS_CMD),
+                                         ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
   if (write_status) {
     ESP_LOGW(TAG, "Error sending write request for auto upload, status=%d", write_status);
   }

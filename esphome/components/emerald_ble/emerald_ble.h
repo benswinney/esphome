@@ -29,22 +29,8 @@ static const espbt::ESPBTUUID EMERALD_CHARACTERISTIC_TIME_WRITE_UUID =
 static const espbt::ESPBTUUID EMERALD_BATTERY_SERVICE_UUID = espbt::ESPBTUUID::from_uint16(0x180F);
 static const espbt::ESPBTUUID EMERALD_BATTERY_CHARACTERISTIC_UUID = espbt::ESPBTUUID::from_uint16(0x2A19);
 
-// static std::string getImpulseCmd =                              "0001010500";
-// static std::string getPairingCodeCmd =                          "0001030100";
-// static std::string getEvery30sPowerConsumptionCmd =             "0001020306";
-// static std::string getDeviceTimeCmd =                           "0001010200";
-// static std::string getUpdatedPowerCmd =                         "0001020100";
-// static std::string getEvery30sPowerConsumptionCmdWitninHours =  "0001021308";
-
-// static std::string setImpulseCmd =          "0001010402";
-// static std::string startGettingHistoryCmd = "0001020400";
-// static std::string endGettingHistoryCmd =   "0001020600";
-// static std::string setDeviceTimeCmd =       "0001010104";
-// static std::string resetCmd =               "0001010a00";
-// static std::string setAutoUploadStatusCmd = "0001020b01";
-// static const uint8_t setAutoUploadStatusCmd = "0001020b01";
-//enabled
-static uint8_t setAutoUploadStatusCmd[] = {0x00,0x01,0x02,0x0b,0x01,0x01};
+// Enable 30-second auto-upload of power measurements.
+static const uint8_t SET_AUTO_UPLOAD_STATUS_CMD[] = {0x00, 0x01, 0x02, 0x0b, 0x01, 0x01};
 
 // 5-byte command headers, big-endian packed into a uint64_t (top 24 bits unused).
 static const uint64_t RETURN30S_POWER_CONSUMPTION_CMD =      0x0001020a06ULL;
@@ -111,9 +97,10 @@ class Emerald : public esphome::ble_client::BLEClientNode, public Component {
   uint16_t battery_char_handle_{0};
   bool handles_discovered_{false};
   bool auth_completed_{false};
-  // uint16_t firmware_char_handle_;
 
   void setup_communication_();
+  void reset_connection_state_();
+  void force_reconnect_();
 };
 
 }  // namespace emerald_ble
